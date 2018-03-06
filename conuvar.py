@@ -31,13 +31,13 @@ def load_data(path):
         sys.exit("Cannot identify the input file format!")
 
     preprocess(data)
-    count      = pd.DataFrame.as_matrix(data.TPM)
+    tpm      = pd.DataFrame.as_matrix(data.TPM)
     conuvar    = pd.DataFrame.as_matrix(data.True_CNV)
     foldchange = pd.DataFrame.as_matrix(data.FoldChange)
 
     print("Done!")
 
-    return count, conuvar, foldchange
+    return tpm, conuvar, foldchange
 
 
 def preprocess(data):
@@ -52,8 +52,7 @@ def preprocess(data):
     Args:
         data - the dataset to work on
     """
-    print("=== Preprocess - Under construction ===")
-    pass
+    print("\t[Preprocess - Under construction]")
 
 
 def initialize(init, n_entry, fc=None):
@@ -77,14 +76,16 @@ def initialize(init, n_entry, fc=None):
     elif init == "fc":
         if not fc:
             sys.exit("Please pass in FoldChange params!")
-        return fc
+        return np.array(fc)
+    elif init == "uni":
+        return np.ones(n_entry)
     else:
         sys.exit("Cannot identify initialization param!")
 
 
 def optimize(train_X, pred_y,
-             n_iter=1000, interval=5, sr=0.01, lr=0.001, n_proc=4):
-
+             n_iter=1000, interval=5, sr=0.01,
+             lr=0.001, n_proc=4, alpha=0.001):
     print("Optimizing ...")
     bin_count = {}
 
@@ -96,58 +97,87 @@ def optimize(train_X, pred_y,
         else:
             bin_count[bin] = [i]
 
-    yi_index = list(range(len(pred_y)))
+    prev_sum_y = sum(pred_y)
+
+    yi_index = list(range(len(pred_y)))  # To be shuffled later
 
     for n in range(n_iter):
         # The n-th iteration
         np.random.shuffle(yi_index)
-        train_samples = sample(bin_count, sr) # contain samples' indexes
-        # print(len(train_samples))
+        train_samples = sample(bin_count, sr)  # contain samples' indexes
 
-        # Single Process Version
-        # start_time = time.time()
-        # for i in yi_index:
-        #     pred_y[i] = sgd(X=train_X, y=pred_y,
-        #                     cur=i, sample_ind=train_samples, lr=lr)
-        # end_time = time.time()
-        # print("Time used:", end_time - start_time)
+        # yi_index_splits = np.array_split(yi_index, n_proc)  # Split workload
+        # pool = mp.Pool(processes=n_proc)
 
-        # Multiprocess Version
-        yi_index_list = np.array_split(yi_index, n_proc)
-        pool = mp.Pool(processes=n_proc)
-        for i in range(n_proc):
-            pool.apply_async(sgd, (train_X, pred_y, yi_index_list[i], train_samples, lr))
-        pool.close()
-        pool.join()
+        # Multi-processing
+        # for i in range(n_proc):
+        #     pool.apply_async(multiproc_worker,
+        #                      (train_X, pred_y, yi_index_splits[i],
+        #                       train_samples, lr, alpha))
+        # pool.close()
+        # pool.join()
+
+        # Single-processing
+        multiproc_worker(train_X, pred_y, yi_index, train_samples, lr, alpha)
 
         if not n % 10:
-            msg = "Optimizing {:.3f}%".format((100 * n/n_iter))
+            delta = sum(pred_y) - prev_sum_y
+            prev_sum_y = sum(pred_y)
+            msg = "\tOptimizing: {:.3f}%," \
+                  "\tDelta Sum y: {:.3f}," \
+                  "\tSum y: {:3f}." \
+                .format(100 * n / n_iter, delta, sum(pred_y))
             sys.stdout.write('\r' +msg)
-
-
 
     print("Done!")
 
 
-def multiproc_worker(X, y, yi_list, samples, lr):
-    for i in yi_list:
-        y[i] = sgd(X, y, i, samples, lr)
+def multiproc_worker(X, y, yi_chunk, samples, lr, alpha):
+    """Stochastic gradient descent
+
+    Worker of multi-processing using stochastic gradient
+        descent to learn yi. yi are modified in place.
+
+    Args:
+        X          - training data
+        y          - the array of predicted y
+        yi_chunk   - the chunk of yi this worker is in charge of
+        samples    - the list of sample indexes
+        lr         - the learning rate
+        alpha      - the scaling factor of 2nd term
+    """
+    for i in yi_chunk:
+        for j in samples:
+            if i != j:
+                d = lr * (
+                    (X[i] * y[j] - X[j] * y[i]) * X[j] / (max(X[i], X[j]) ** 2)
+                    + alpha * (y[j] - y[i]) / ((j - i) ** 2)
+                )
+                y[i] += d
 
 
-def evaluate(ground_truth, pred_y):
+def evaluate(path, ground_truth, pred_y, foldchange):
     """Evaluate the predicted result
 
     Evalute the predicted result
 
     Args:
+        path         - the output file path
         ground_truth - the ground truth of copy number variation
         pred_y       - the predicted value
+        foldchange   - the foldchange metrics
 
     Return:
         don't know what to return
     """
-    print("=== EVALUATION - Under construction ===")
-    pass
+    # print("=== EVALUATION - Under construction ===")
+    print("Printing to {}".format(path))
+    with open(path, "w") as fout:
+        for i in range(len(ground_truth)):
+            print("{:d} {:3f} {:3f}"
+                  .format(ground_truth[i], pred_y[i], foldchange[i]),
+                  file=fout)
+    print("Done!")
 
 
 def sample(bin_count, sr):
@@ -170,56 +200,32 @@ def sample(bin_count, sr):
         bin_sample = random.sample(bin, k=int(len(bin) * sr))
         # random.sample is used to sample instead of numpy.random.choice
         #   since random.sample is faster than numpy.random.choice
-        # bin_sample = np.random.choice(bin,
-        #                               size=int(len(bin) * sr))
+        # bin_sample = np.random.choice(bin, size=int(len(bin) * sr))
         samples += list(bin_sample)
-    np.random.shuffle(samples)
+    np.random.shuffle(samples)  # However, numpy has a better shuffle
     return samples
 
 
-def sgd(X, y, cur, sample_ind, lr):
-    """Stochastic gradient descent
-
-    Using stochastic gradient descent to learn y_i
-
-    Args:
-        X          - training data
-        y          - the array of predicted y
-        cur        - the current y_i to optimize
-        sample_ind - the list of sample indexes
-        lr         - the learning rate
-
-    Return:
-        new_yi     - the optimized y_i
-    """
-    new_yi = y[cur]
-    i = cur
-    for j in sample_ind:
-        if i != j:
-            new_yi = new_yi \
-                     + lr * ((X[i] * y[j] - X[j] * y[i]) * X[j]
-                             + (y[j] - y[i]) / ((j - i) ** 2))
-    return new_yi
-
-
-def main(path, n_iter, init, lr, sr, interval, n_proc):
-    train_X, grdtruth_y, fc_y = load_data(path)
+def main(infile, n_iter, init, lr, sr,
+         alpha, interval, n_proc, outfile):
+    train_X, grdtruth_y, fc_y = load_data(infile)
     n_entry = train_X.shape[0]
 
     pred_y = initialize(init, n_entry, fc_y)
 
-    optimize(train_X, pred_y,
+    optimize(train_X=train_X, pred_y=pred_y,
              n_iter=n_iter, interval=interval,
-             sr=sr, lr=lr, n_proc=n_proc)
+             sr=sr, lr=lr, n_proc=n_proc, alpha=alpha)
 
-    evaluate(train_X, grdtruth_y)
+    evaluate(outfile, grdtruth_y, pred_y, fc_y)
 
 
 if __name__ == "__main__":
     parser = optparse.OptionParser()
+
     parser.add_option("-f", "--file-input",
                       type="string",
-                      dest="filepath",
+                      dest="infile",
                       default="data/exp1-2_cnv.txt")
 
     parser.add_option("-n", "--num-of-iteration",
@@ -230,7 +236,7 @@ if __name__ == "__main__":
     parser.add_option("-i", "--initialization",
                       type="string",
                       dest="init",
-                      default="random")
+                      default="uni")
 
     parser.add_option("-r", "--learning-rate",
                       type="float",
@@ -252,14 +258,26 @@ if __name__ == "__main__":
                       dest="n_proc",
                       default="4")
 
+    parser.add_option("-o", "--file-output",
+                      type="string",
+                      dest="outfile",
+                      default="data/output.txt")
+
+    parser.add_option("-a", "--alpha",
+                      type="float",
+                      dest="alpha",
+                      default="0.001")
+
     options, args = parser.parse_args()
 
-    main(path=options.filepath,
+    main(infile=options.infile,
          n_iter=options.num_iter,
          init=options.init,
          lr=options.lr,
          sr=options.sr,
+         alpha=options.alpha,
          interval=options.interval,
-         n_proc=options.n_proc)
+         n_proc=options.n_proc,
+         outfile=options.outfile)
 
 
