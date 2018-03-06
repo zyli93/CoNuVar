@@ -30,9 +30,11 @@ def load_data(path):
     else:
         sys.exit("Cannot identify the input file format!")
 
-    preprocess(data)
-    tpm      = pd.DataFrame.as_matrix(data.TPM)
-    conuvar    = pd.DataFrame.as_matrix(data.True_CNV)
+    data = preprocess(data)
+    data.sort_values("StartPos", inplace=True)
+
+    tpm = pd.DataFrame.as_matrix(data.TPM)
+    conuvar = pd.DataFrame.as_matrix(data.True_CNV)
     foldchange = pd.DataFrame.as_matrix(data.FoldChange)
 
     print("Done!")
@@ -47,12 +49,19 @@ def preprocess(data):
     Pre-process data by following rules:
 
         1 - Remove all entries whose fc < 0.1
-        2 - TBC
+        2 - Sort by the start position
 
     Args:
         data - the dataset to work on
     """
     print("\t[Preprocess - Under construction]")
+
+    region = pd.DataFrame.as_matrix(data.Region)
+    start_pos = [int(x.split("_")[1]) // 1000 for x in region]
+    idx = data.index.tolist()
+    df_region = pd.DataFrame(index=idx, data=start_pos,
+                             columns=["StartPos"], dtype=np.int64)
+    return data.join(df_region)
 
 
 def initialize(init, n_entry, fc=None):
@@ -127,7 +136,8 @@ def optimize(train_X, pred_y,
                   "\tDelta Sum y: {:.3f}," \
                   "\tSum y: {:3f}." \
                 .format(100 * n / n_iter, delta, sum(pred_y))
-            sys.stdout.write('\r' +msg)
+            # sys.stdout.write('\r' +msg)
+            print(msg)
 
     print("Done!")
 
